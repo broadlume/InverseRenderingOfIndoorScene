@@ -22,16 +22,19 @@ def LSregress(pred, gt, origin):
 
 def LSregressDiffSpec(diff, spec, imOrig, diffOrig, specOrig ):
     nb, nc, nh, nw = diff.size()
-    
+
     # Mask out too bright regions
     mask = (imOrig < 0.9).float() 
     diff = diff * mask 
     spec = spec * mask 
     im = imOrig * mask
-
+    print("diff shape: {}".format(diff.shape))
+    print("im shape: {}".format(im.shape))
+    print("nb: {}".format(nb))
     diff = diff.view(nb, -1)
     spec = spec.view(nb, -1)
-    im = im.view(nb, -1)
+    #im = im.view(nb, -1)
+    im = im.reshape(nb, -1)
 
     a11 = torch.sum(diff * diff, dim=1)
     a22 = torch.sum(spec * spec, dim=1)
@@ -70,7 +73,8 @@ def LSregressDiffSpec(diff, spec, imOrig, diffOrig, specOrig ):
     # Do the regression twice to avoid clamping
     renderedImg = torch.clamp(diffScaled + specScaled, 0, 1)
     renderedImg = renderedImg.view(nb, -1)
-    imOrig = imOrig.view(nb, -1)
+    #imOrig = imOrig.view(nb, -1)
+    imOrig = imOrig.reshape(nb, -1)
 
     coefIm = (torch.sum(renderedImg * imOrig, dim = 1) \
             / torch.clamp(torch.sum(renderedImg * renderedImg, dim=1), min=1e-5) ).detach()
