@@ -19,6 +19,7 @@ tictoc = TicToc();
 inputWidth = 320
 inputHeight = 240
 
+
 parser = argparse.ArgumentParser()
 # The locationi of testing set
 parser.add_argument('--dataRoot', help='path to real images')
@@ -45,6 +46,9 @@ opt = parser.parse_args()
 print(opt)
 
 opt.gpuId = opt.deviceIds[0]
+device = 'cpu'
+if opt.cuda:
+    device = 'cuda:{0}'.format(opt.gpuId)
 
 experiments = ['models/check_cascade0_w320_h240', 'models/check_cascade1_w320_h240' ]
 experimentsLight = ['models/check_cascadeLight0_sg12_offset1', 'models/check_cascadeLight1_sg12_offset1' ]
@@ -62,8 +66,6 @@ random.seed(opt.seed )
 torch.manual_seed(opt.seed )
 
 opt.batchSize = 1
-if torch.cuda.is_available() and not opt.cuda:
-    print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
 
 encoders = []
@@ -82,11 +84,11 @@ tictoc.tic()
 imBatchSmall = Variable(torch.FloatTensor(opt.batchSize, 3, opt.envRow, opt.envCol ) )
 for n in range(0, opt.level ):
     # BRDF Predictioins
-    encoders.append(models.encoder0(cascadeLevel = n).eval()  )
-    albedoDecoders.append(models.decoder0(mode=0).eval() )
-    normalDecoders.append(models.decoder0(mode=1).eval() )
-    roughDecoders.append(models.decoder0(mode=2).eval() )
-    depthDecoders.append(models.decoder0(mode=4).eval() )
+    encoders.append(models.encoder0(cascadeLevel = n).eval().to(device) )
+    albedoDecoders.append(models.decoder0(mode=0).eval().to(device) )
+    normalDecoders.append(models.decoder0(mode=1).eval().to(device) )
+    roughDecoders.append(models.decoder0(mode=2).eval().to(device) )
+    depthDecoders.append(models.decoder0(mode=4).eval().to(device) )
 
     # Load weight
     encoders[n].load_state_dict(
@@ -100,23 +102,12 @@ for n in range(0, opt.level ):
     depthDecoders[n].load_state_dict(
             torch.load('{0}/depth{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
 
-    for param in encoders[n].parameters():
-        param.requires_grad = False
-    for param in albedoDecoders[n].parameters():
-        param.requires_grad = False
-    for param in normalDecoders[n].parameters():
-        param.requires_grad = False
-    for param in roughDecoders[n].parameters():
-        param.requires_grad = False
-    for param in depthDecoders[n].parameters():
-        param.requires_grad = False
-
     if opt.isLight or (opt.level == 2 and n == 0):
         # Light network
-        lightEncoders.append(models.encoderLight(cascadeLevel = n, SGNum = opt.SGNum).eval() )
-        axisDecoders.append(models.decoderLight(mode=0, SGNum = opt.SGNum ).eval() )
-        lambDecoders.append(models.decoderLight(mode=1, SGNum = opt.SGNum ).eval() )
-        weightDecoders.append(models.decoderLight(mode=2, SGNum = opt.SGNum ).eval() )
+        lightEncoders.append(models.encoderLight(cascadeLevel = n, SGNum = opt.SGNum).eval().to(device) )
+        axisDecoders.append(models.decoderLight(mode=0, SGNum = opt.SGNum ).eval().to(device) )
+        lambDecoders.append(models.decoderLight(mode=1, SGNum = opt.SGNum ).eval().to(device) )
+        weightDecoders.append(models.decoderLight(mode=2, SGNum = opt.SGNum ).eval().to(device) )
 
         lightEncoders[n].load_state_dict(
                 torch.load('{0}/lightEncoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
@@ -127,36 +118,12 @@ for n in range(0, opt.level ):
         weightDecoders[n].load_state_dict(
                 torch.load('{0}/weightDecoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
 
-        for param in lightEncoders[n].parameters():
-            param.requires_grad = False
-        for param in axisDecoders[n].parameters():
-            param.requires_grad = False
-        for param in lambDecoders[n].parameters():
-            param.requires_grad = False
-        for param in weightDecoders[n].parameters():
-            param.requires_grad = False
-
 #########################################
 
 print("Loaded models")
 tictoc.toc()
 tictoc.tic()
 
-##############  ######################
-# Send things into GPU
-if opt.cuda:
-    for n in range(0, opt.level ):
-        encoders[n] = encoders[n].cuda(opt.gpuId )
-        albedoDecoders[n] = albedoDecoders[n].cuda(opt.gpuId )
-        normalDecoders[n] = normalDecoders[n].cuda(opt.gpuId )
-        roughDecoders[n] = roughDecoders[n].cuda(opt.gpuId )
-        depthDecoders[n] = depthDecoders[n].cuda(opt.gpuId )
-
-        if opt.isLight or (n == 0 and opt.level == 2):
-            lightEncoders[n] = lightEncoders[n].cuda(opt.gpuId )
-            axisDecoders[n] = axisDecoders[n].cuda(opt.gpuId )
-            lambDecoders[n] = lambDecoders[n].cuda(opt.gpuId )
-            weightDecoders[n] = weightDecoders[n].cuda(opt.gpuId )
 ####################################
 
 print("Sent models to gpy")
@@ -232,7 +199,7 @@ for imName in imList:
 
         im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
         im = im / im.max()
-        imBatches.append( Variable(torch.from_numpy(im**(2.2) ) ).cuda() )
+        imBatches.append( Variable(torch.from_numpy(im**(2.2) ) ).to(device) )
 
     nh, nw = newImHeight[-1], newImWidth[-1]
 
@@ -256,7 +223,7 @@ for imName in imList:
 
     im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
     im = im / im.max()
-    imBatchSmall = Variable(torch.from_numpy(im**(2.2) ) ).cuda()
+    imBatchSmall = Variable(torch.from_numpy(im**(2.2) ) ).to(device)
     renderLayer = models.renderingLayer(isCuda = opt.cuda,
             imWidth=newEnvWidth, imHeight=newEnvHeight, fov = fov,
             envWidth = opt.envWidth, envHeight = opt.envHeight)
@@ -273,12 +240,14 @@ for imName in imList:
 
     ################# BRDF Prediction ######################
     inputBatch = imBatches[0]
-    x1, x2, x3, x4, x5, x6 = encoders[0](inputBatch )
+    with torch.no_grad():
+        x1, x2, x3, x4, x5, x6 = encoders[0](inputBatch )
 
-    albedoPred = 0.5 * (albedoDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
-    normalPred = normalDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6)
-    roughPred = roughDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6 )
-    depthPred = 0.5 * (depthDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
+    
+        albedoPred = 0.5 * (albedoDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
+        normalPred = normalDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6)
+        roughPred = roughDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6 )
+        depthPred = 0.5 * (depthDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
 
     # Normalize Albedo and depth
     bn, ch, nrow, ncol = albedoPred.size()
@@ -312,12 +281,15 @@ for imName in imList:
 
         inputBatch = torch.cat([imBatchLarge, albedoPredLarge,
             0.5*(normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge ], dim=1 )
-        x1, x2, x3, x4, x5, x6 = lightEncoders[0](inputBatch )
 
-        # Prediction
-        axisPred = axisDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
-        lambPred = lambDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
-        weightPred = weightDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
+        with torch.no_grad():
+            x1, x2, x3, x4, x5, x6 = lightEncoders[0](inputBatch )
+
+            # Prediction
+            axisPred = axisDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
+            lambPred = lambDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
+            weightPred = weightDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
+
         bn, SGNum, _, envRow, envCol = axisPred.size()
         envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
         envmapsPreds.append(envmapsPred )
@@ -366,11 +338,12 @@ for imName in imList:
             0.5 * (normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge,
             diffusePredLarge, specularPredLarge], dim=1)
 
-        x1, x2, x3, x4, x5, x6 = encoders[1](inputBatch )
-        albedoPred = 0.5 * (albedoDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
-        normalPred = normalDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6)
-        roughPred = roughDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6 )
-        depthPred = 0.5 * (depthDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
+        with torch.no_grad():
+            x1, x2, x3, x4, x5, x6 = encoders[1](inputBatch )
+            albedoPred = 0.5 * (albedoDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
+            normalPred = normalDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6)
+            roughPred = roughDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6 )
+            depthPred = 0.5 * (depthDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
 
         # Normalize Albedo and depth
         bn, ch, nrow, ncol = albedoPred.size()
@@ -405,12 +378,15 @@ for imName in imList:
 
         inputBatch = torch.cat([imBatchLarge, albedoPredLarge,
             0.5*(normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge ], dim=1 )
-        x1, x2, x3, x4, x5, x6 = lightEncoders[1](inputBatch, envmapsPred )
 
-        # Prediction
-        axisPred = axisDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
-        lambPred = lambDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
-        weightPred = weightDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
+        with torch.no_grad():
+            x1, x2, x3, x4, x5, x6 = lightEncoders[1](inputBatch, envmapsPred )
+
+            # Prediction
+            axisPred = axisDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
+            lambPred = lambDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
+            weightPred = weightDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
+
         bn, SGNum, _, envRow, envCol = axisPred.size()
         envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
         envmapsPreds.append(envmapsPred )
