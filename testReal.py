@@ -7,12 +7,9 @@ import random
 import os
 import models
 import utils
-import glob
 import os.path as osp
 import cv2
-import BilateralLayer as bs
 import torch.nn.functional as F
-import scipy.io as io
 import utils
 
 from pytictoc import TicToc
@@ -27,25 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--dataRoot', help='path to real images')
 parser.add_argument('--imList', help='path to image list')
 
-parser.add_argument('--experiment0', default=None, help='the path to the model of first cascade' )
-parser.add_argument('--experimentLight0', default=None, help='the path to the model of first cascade' )
-parser.add_argument('--experimentBS0', default=None, help='the path to the model of bilateral solver')
-parser.add_argument('--experiment1', default=None, help='the path to the model of second cascade' )
-parser.add_argument('--experimentLight1', default=None, help='the path to the model of second cascade')
-parser.add_argument('--experimentBS1', default=None, help='the path to the model of second bilateral solver')
-
 parser.add_argument('--testRoot', help='the path to save the testing errors' )
-
-# The basic testing setting
-parser.add_argument('--nepoch0', type=int, default=14, help='the number of epoch for testing')
-parser.add_argument('--nepochLight0', type=int, default=10, help='the number of epoch for testing')
-parser.add_argument('--nepochBS0', type=int, default=15, help='the number of epoch for bilateral solver')
-parser.add_argument('--niterBS0', type=int, default=1000, help='the number of iterations for testing')
-
-parser.add_argument('--nepoch1', type=int, default=7, help='the number of epoch for testing')
-parser.add_argument('--nepochLight1', type=int, default=10, help='the number of epoch for testing')
-parser.add_argument('--nepochBS1', type=int, default=8, help='the number of epoch for bilateral solver')
-parser.add_argument('--niterBS1', type=int, default=4500, help='the number of iterations for testing')
 
 parser.add_argument('--envRow', type=int, default=120, help='the height /width of the envmap predictions')
 parser.add_argument('--envCol', type=int, default=160, help='the height /width of the envmap predictions')
@@ -60,7 +39,6 @@ parser.add_argument('--deviceIds', type=int, nargs='+', default=[0], help='the g
 
 parser.add_argument('--level', type=int, default=2, help='the cascade level')
 parser.add_argument('--isLight', action='store_true', help='whether to predict lightig')
-parser.add_argument('--isBS', action='store_true', help='whether to use bilateral solver')
 
 # Image Picking
 opt = parser.parse_args()
@@ -68,33 +46,10 @@ print(opt)
 
 opt.gpuId = opt.deviceIds[0]
 
-if opt.experiment0 is None:
-    opt.experiment0 = 'check_cascade0_w%d_h%d' % (inputWidth, inputHeight )
-
-if opt.experiment1 is None:
-    opt.experiment1 = 'check_cascade1_w%d_h%d' % (inputWidth, inputHeight )
-
-if opt.experimentLight0 is None:
-    opt.experimentLight0 = 'check_cascadeLight0_sg%d_offset%.1f' % \
-            (opt.SGNum, opt.offset )
-
-if opt.experimentLight1 is None:
-    opt.experimentLight1 = 'check_cascadeLight1_sg%d_offset%.1f' % \
-            (opt.SGNum, opt.offset )
-
-if opt.experimentBS0 is None:
-    opt.experimentBS0 = 'checkBs_cascade0_w%d_h%d' % (inputWidth, inputHeight )
-
-if opt.experimentBS1 is None:
-    opt.experimentBS1 = 'checkBs_cascade1_w%d_h%d' % (inputWidth, inputHeight )
-
-experiments = [opt.experiment0, opt.experiment1 ]
-experimentsLight = [opt.experimentLight0, opt.experimentLight1 ]
-experimentsBS = [opt.experimentBS0, opt.experimentBS1 ]
-nepochs = [opt.nepoch0, opt.nepoch1 ]
-nepochsLight = [opt.nepochLight0, opt.nepochLight1 ]
-nepochsBS = [opt.nepochBS0, opt.nepochBS1 ]
-nitersBS = [opt.niterBS0, opt.niterBS1 ]
+experiments = ['models/check_cascade0_w320_h240', 'models/check_cascade1_w320_h240' ]
+experimentsLight = ['models/check_cascadeLight0_sg12_offset1', 'models/check_cascadeLight1_sg12_offset1' ]
+nepochs = [14, 7]
+nepochsLight = [10, 10 ]
 
 imHeights = [inputHeight, inputHeight ]
 imWidths = [inputWidth, inputWidth ]
@@ -103,7 +58,6 @@ os.system('mkdir {0}'.format(opt.testRoot ) )
 os.system('cp *.py %s' % opt.testRoot )
 
 opt.seed = 0
-print("Random Seed: ", opt.seed )
 random.seed(opt.seed )
 torch.manual_seed(opt.seed )
 
@@ -122,10 +76,6 @@ lightEncoders= []
 axisDecoders = []
 lambDecoders = []
 weightDecoders = []
-
-albedoBSs = []
-depthBSs = []
-roughBSs = []
 
 tictoc.tic()
 
@@ -233,14 +183,13 @@ for imName in imList:
 
     imBatches = []
 
-    albedoNames, albedoImNames = [], []
-    normalNames, normalImNames = [], []
-    roughNames, roughImNames = [], []
-    depthNames, depthImNames = [], []
+    albedoImNames = []
+    normalImNames = []
+    roughImNames = []
+    depthImNames = []
     imOutputNames = []
-    envmapPredNames, envmapPredImNames = [], []
-    renderedNames, renderedImNames = [], []
-    cLightNames = []
+    envmapPredImNames = []
+    renderedImNames = []
     shadingNames, envmapsPredSGNames = [], []
 
     imId = imName.split('/')[-1]
@@ -318,7 +267,6 @@ for imName in imList:
     ########################################################
     # Build the cascade network architecture #
     albedoPreds, normalPreds, roughPreds, depthPreds = [], [], [], []
-    albedoBSPreds, roughBSPreds, depthBSPreds = [], [], []
     envmapsPreds, envmapsPredImages, renderedPreds = [], [], []
     cAlbedos = []
     cLights = []
@@ -542,46 +490,7 @@ for imName in imList:
         depthPredIm = (255 * depthOut ).astype(np.uint8)
         cv2.imwrite(depthImNames[n], depthPredIm )
 
-    if opt.isBS:
-        # Save the albedo bs
-        for n in range(0, len(albedoBSPreds ) ):
-            if n < len(cAlbedos ):
-                albedoBSPred = (albedoBSPreds[n] * cAlbedos[n]).data.cpu().numpy().squeeze()
-            else:
-                albedoBSPred = albedoBSPreds[n].data.cpu().numpy().squeeze()
-            albedoBSPred = albedoBSPred.transpose([1, 2, 0] )
-            albedoBSPred = (albedoBSPred ) ** (1.0/2.2 )
-            albedoBSPred = cv2.resize(albedoBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            albedoBSPredIm = ( np.clip(255 * albedoBSPred, 0, 255) ).astype(np.uint8)
-            cv2.imwrite(albedoImNames[n].replace('albedo', 'albedoBS'), albedoBSPredIm[:, :, ::-1] )
-
-        # Save the rough bs
-        for n in range(0, len(roughBSPreds ) ):
-            roughBSPred = roughBSPreds[n].data.cpu().numpy().squeeze()
-            roughBSPred = cv2.resize(roughBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            roughBSPredIm = (255 * 0.5*(roughBSPred+1) ).astype(np.uint8)
-            cv2.imwrite(roughImNames[n].replace('rough', 'roughBS'), roughBSPredIm )
-
-
-        for n in range(0, len(depthBSPreds) ):
-            depthBSPred = depthBSPreds[n].data.cpu().numpy().squeeze()
-
-            depthBSPred = depthBSPred / np.maximum(depthBSPred.mean(), 1e-10) * 3
-            depthBSPred = cv2.resize(depthBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            depthOut = 1 / np.clip(depthBSPred+1, 1e-6, 10)
-            depthBSPredIm = (255 * depthOut ).astype(np.uint8)
-            cv2.imwrite(depthImNames[n].replace('depth', 'depthBS'), depthBSPredIm )
-
     if opt.isLight:
-        # Save the envmapImages
-        for n in range(0, len(envmapsPredImages ) ):
-            envmapsPredImage = envmapsPredImages[n].data.cpu().numpy().squeeze()
-            envmapsPredImage = envmapsPredImage.transpose([1, 2, 3, 4, 0] )
-            #utils.writeEnvToFile(envmapsPredImages[n], 0, envmapPredImNames[n], nrows=24, ncols=16 )
-
         for n in range(0, len(envmapsPreds ) ):
             envmapsPred = envmapsPreds[n].data.cpu().numpy()
             shading = utils.predToShading(cp.asarray(envmapsPred), SGNum = opt.SGNum )
@@ -597,7 +506,6 @@ for imName in imList:
             renderedPred = renderedPred.transpose([1, 2, 0] )
             renderedPred = (renderedPred / renderedPred.max() ) ** (1.0/2.2)
             renderedPred = cv2.resize(renderedPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-            #np.save(renderedNames[n], renderedPred )
 
             renderedPred = (np.clip(renderedPred, 0, 1) * 255).astype(np.uint8 )
             cv2.imwrite(renderedImNames[n], renderedPred[:, :, ::-1] )
