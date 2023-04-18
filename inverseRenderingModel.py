@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import cupy as cp
+import cupy;
 from torch.autograd import Variable
 import argparse
 import random
@@ -15,12 +15,9 @@ import torch.nn.functional as F
 import scipy.io as io
 import utils
 
-from pytictoc import TicToc
+import time
 
-tictoc = TicToc();
-
-inputWidth = 320
-inputHeight = 240
+starttick = time.time()
 
 parser = argparse.ArgumentParser()
 # The locationi of testing set
@@ -29,23 +26,22 @@ parser.add_argument('--imList', help='path to image list')
 
 parser.add_argument('--experiment0', default=None, help='the path to the model of first cascade' )
 parser.add_argument('--experimentLight0', default=None, help='the path to the model of first cascade' )
-parser.add_argument('--experimentBS0', default=None, help='the path to the model of bilateral solver')
 parser.add_argument('--experiment1', default=None, help='the path to the model of second cascade' )
 parser.add_argument('--experimentLight1', default=None, help='the path to the model of second cascade')
-parser.add_argument('--experimentBS1', default=None, help='the path to the model of second bilateral solver')
 
 parser.add_argument('--testRoot', help='the path to save the testing errors' )
 
 # The basic testing setting
 parser.add_argument('--nepoch0', type=int, default=14, help='the number of epoch for testing')
 parser.add_argument('--nepochLight0', type=int, default=10, help='the number of epoch for testing')
-parser.add_argument('--nepochBS0', type=int, default=15, help='the number of epoch for bilateral solver')
-parser.add_argument('--niterBS0', type=int, default=1000, help='the number of iterations for testing')
 
 parser.add_argument('--nepoch1', type=int, default=7, help='the number of epoch for testing')
 parser.add_argument('--nepochLight1', type=int, default=10, help='the number of epoch for testing')
-parser.add_argument('--nepochBS1', type=int, default=8, help='the number of epoch for bilateral solver')
-parser.add_argument('--niterBS1', type=int, default=4500, help='the number of iterations for testing')
+
+parser.add_argument('--imHeight0', type=int, default=240, help='the height / width of the input image to network' )
+parser.add_argument('--imWidth0', type=int, default=320, help='the height / width of the input image to network' )
+parser.add_argument('--imHeight1', type=int, default=240, help='the height / width of the input image to network' )
+parser.add_argument('--imWidth1', type=int, default=320, help='the height / width of the input image to network' )
 
 parser.add_argument('--envRow', type=int, default=120, help='the height /width of the envmap predictions')
 parser.add_argument('--envCol', type=int, default=160, help='the height /width of the envmap predictions')
@@ -69,10 +65,10 @@ print(opt)
 opt.gpuId = opt.deviceIds[0]
 
 if opt.experiment0 is None:
-    opt.experiment0 = 'check_cascade0_w%d_h%d' % (inputWidth, inputHeight )
+    opt.experiment0 = 'check_cascade0_w%d_h%d' % (opt.imWidth0, opt.imHeight0 )
 
 if opt.experiment1 is None:
-    opt.experiment1 = 'check_cascade1_w%d_h%d' % (inputWidth, inputHeight )
+    opt.experiment1 = 'check_cascade1_w%d_h%d' % (opt.imWidth1, opt.imHeight1 )
 
 if opt.experimentLight0 is None:
     opt.experimentLight0 = 'check_cascadeLight0_sg%d_offset%.1f' % \
@@ -82,22 +78,13 @@ if opt.experimentLight1 is None:
     opt.experimentLight1 = 'check_cascadeLight1_sg%d_offset%.1f' % \
             (opt.SGNum, opt.offset )
 
-if opt.experimentBS0 is None:
-    opt.experimentBS0 = 'checkBs_cascade0_w%d_h%d' % (inputWidth, inputHeight )
-
-if opt.experimentBS1 is None:
-    opt.experimentBS1 = 'checkBs_cascade1_w%d_h%d' % (inputWidth, inputHeight )
-
 experiments = [opt.experiment0, opt.experiment1 ]
 experimentsLight = [opt.experimentLight0, opt.experimentLight1 ]
-experimentsBS = [opt.experimentBS0, opt.experimentBS1 ]
 nepochs = [opt.nepoch0, opt.nepoch1 ]
 nepochsLight = [opt.nepochLight0, opt.nepochLight1 ]
-nepochsBS = [opt.nepochBS0, opt.nepochBS1 ]
-nitersBS = [opt.niterBS0, opt.niterBS1 ]
 
-imHeights = [inputHeight, inputHeight ]
-imWidths = [inputWidth, inputWidth ]
+imHeight = opt.imHeight0
+imWidth = opt.imWidth0
 
 os.system('mkdir {0}'.format(opt.testRoot ) )
 os.system('cp *.py %s' % opt.testRoot )
@@ -123,11 +110,7 @@ axisDecoders = []
 lambDecoders = []
 weightDecoders = []
 
-albedoBSs = []
-depthBSs = []
-roughBSs = []
-
-tictoc.tic()
+startloadtick = time.time()
 
 imBatchSmall = Variable(torch.FloatTensor(opt.batchSize, 3, opt.envRow, opt.envCol ) )
 for n in range(0, opt.level ):
@@ -188,9 +171,8 @@ for n in range(0, opt.level ):
 
 #########################################
 
-print("Loaded models")
-tictoc.toc()
-tictoc.tic()
+print("Loaded models {}".format(time.time()-startloadtick))
+togpustarttick = time.time()
 
 ##############  ######################
 # Send things into GPU
@@ -209,9 +191,7 @@ if opt.cuda:
             weightDecoders[n] = weightDecoders[n].cuda(opt.gpuId )
 ####################################
 
-print("Sent models to gpy")
-tictoc.toc()
-
+print("Sent models to gpu {}".format(time.time()-togpustarttick))
 
 ####################################
 outfilename = opt.testRoot + '/results'
@@ -228,34 +208,18 @@ imList = sorted(imList )
 
 j = 0
 for imName in imList:
+    procimgstarttick = time.time()
     j += 1
     print('%d/%d: %s' % (j, len(imList), imName) )
 
     imBatches = []
-
-    albedoNames, albedoImNames = [], []
-    normalNames, normalImNames = [], []
-    roughNames, roughImNames = [], []
-    depthNames, depthImNames = [], []
-    imOutputNames = []
-    envmapPredNames, envmapPredImNames = [], []
-    renderedNames, renderedImNames = [], []
-    cLightNames = []
-    shadingNames, envmapsPredSGNames = [], []
+    shadingNames = []
 
     imId = imName.split('/')[-1]
     print(imId )
-    imOutputNames.append(osp.join(outfilename, imId ) )
 
     for n in range(0, opt.level ):
-        albedoImNames.append(osp.join(outfilename, imId.replace('.png', '_albedo%d.png' % n ) ) )
-        normalImNames.append(osp.join(outfilename, imId.replace('.png', '_normal%d.png' % n) ) )
-        roughImNames.append(osp.join(outfilename, imId.replace('.png', '_rough%d.png' % n) ) )
-        depthImNames.append(osp.join(outfilename, imId.replace('.png', '_depth%d.png' % n) ) )
-
         shadingNames.append(osp.join(outfilename, imId.replace('.png', '_shading%d.png' % n) ) )
-        envmapPredImNames.append(osp.join(outfilename, imId.replace('.png', '_envmap%d.png' % n) ) )
-        renderedImNames.append(osp.join(outfilename, imId.replace('.png', '_rendered%d.png' % n) ) )
 
     # Load the image from cpu to gpu
     assert(osp.isfile(imName ) )
@@ -263,47 +227,42 @@ for imName in imList:
     nh, nw = im_cpu.shape[0], im_cpu.shape[1]
 
     # Resize Input Images
-    newImWidth = []
-    newImHeight = []
-    for n in range(0, opt.level ):
-        if nh < nw:
-            newW = imWidths[n]
-            newH = int(float(imWidths[n] ) / float(nw) * nh )
-        else:
-            newH = imHeights[n]
-            newW = int(float(imHeights[n] ) / float(nh) * nw )
+    resizedWidth = 0
+    resizedHeight = 0
 
-        if nh < newH:
-            im = cv2.resize(im_cpu, (newW, newH), interpolation = cv2.INTER_AREA )
-        else:
-            im = cv2.resize(im_cpu, (newW, newH), interpolation = cv2.INTER_LINEAR )
+    if nh < nw:
+        resizedWidth = imWidth
+        resizedHeight = int(float(imWidth ) / float(nw) * nh )
+    else:
+        resizedHeight = imHeight
+        resizedWidth = int(float(imHeight ) / float(nh) * nw )
 
-        newImWidth.append(newW )
-        newImHeight.append(newH )
+    if nh < resizedHeight:
+        im = cv2.resize(im_cpu, (resizedWidth, resizedHeight), interpolation = cv2.INTER_AREA )
+    else:
+        im = cv2.resize(im_cpu, (resizedWidth, resizedHeight), interpolation = cv2.INTER_LINEAR )
 
-        im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
-        im = im / im.max()
-        imBatches.append( Variable(torch.from_numpy(im**(2.2) ) ).cuda() )
+    im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
+    im = im / im.max()
+    imBatches.append( Variable(torch.from_numpy(im**(2.2) ) ).cuda() )
 
-    nh, nw = newImHeight[-1], newImWidth[-1]
+    nh, nw = resizedHeight, resizedWidth
 
     newEnvWidth, newEnvHeight, fov = 0, 0, 0
-    if nh < nw:
+    if resizedHeight < resizedWidth:
         fov = 57
-        newW = opt.envCol
-        newH = int(float(opt.envCol ) / float(nw) * nh )
+        newEnvWidth = opt.envCol
+        newEnvHeight = int(float(opt.envCol ) / float(resizedWidth) * resizedHeight )
     else:
         fov = 42.75
-        newH = opt.envRow
-        newW = int(float(opt.envRow ) / float(nh) * nw )
+        newEnvHeight = opt.envRow
+        newEnvWidth = int(float(opt.envRow ) / float(resizedHeight) * resizedWidth )
 
-    if nh < newH:
-        im = cv2.resize(im_cpu, (newW, newH), interpolation = cv2.INTER_AREA )
+    if resizedHeight < newEnvHeight:
+        im = cv2.resize(im_cpu, (newEnvWidth, newEnvHeight), interpolation = cv2.INTER_AREA )
     else:
-        im = cv2.resize(im_cpu, (newW, newH), interpolation = cv2.INTER_LINEAR )
+        im = cv2.resize(im_cpu, (newEnvWidth, newEnvHeight), interpolation = cv2.INTER_LINEAR )
 
-    newEnvWidth = newW
-    newEnvHeight = newH
 
     im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
     im = im / im.max()
@@ -319,9 +278,7 @@ for imName in imList:
     # Build the cascade network architecture #
     albedoPreds, normalPreds, roughPreds, depthPreds = [], [], [], []
     albedoBSPreds, roughBSPreds, depthBSPreds = [], [], []
-    envmapsPreds, envmapsPredImages, renderedPreds = [], [], []
-    cAlbedos = []
-    cLights = []
+    envmapsPreds, envmapsPredImages = [], []
 
     ################# BRDF Prediction ######################
     inputBatch = imBatches[0]
@@ -385,34 +342,20 @@ for imName in imList:
                 specularPred,
                 imBatchSmall,
                 diffusePred, specularPred )
-        renderedPred = diffusePredNew + specularPredNew
-        renderedPreds.append(renderedPred )
-
-        cDiff, cSpec = (torch.sum(diffusePredNew) / torch.sum(diffusePred )).data.item(), ((torch.sum(specularPredNew) ) / (torch.sum(specularPred) ) ).data.item()
-        if cSpec < 1e-3:
-            cAlbedo = 1/ albedoPreds[-1].max().data.item()
-            cLight = cDiff / cAlbedo
-        else:
-            cLight = cSpec
-            cAlbedo = cDiff / cLight
-            cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
-            cLight = cDiff / cAlbedo
-        envmapsPredImages[0] = envmapsPredImages[0] * cLight
-        cAlbedos.append(cAlbedo )
-        cLights.append(cLight )
 
         diffusePred = diffusePredNew
         specularPred = specularPredNew
 
     #################### BRDF Prediction ####################
+    '''
     if opt.level == 2:
-        albedoPredLarge = F.interpolate(albedoPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        normalPredLarge = F.interpolate(normalPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        roughPredLarge = F.interpolate(roughPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        depthPredLarge = F.interpolate(depthPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
+        albedoPredLarge = F.interpolate(albedoPreds[0], [newEnvHeight, newEnvWidth ], mode='bilinear')
+        normalPredLarge = F.interpolate(normalPreds[0], [newEnvHeight, newEnvWidth ], mode='bilinear')
+        roughPredLarge = F.interpolate(roughPreds[0], [newEnvHeight, newEnvWidth ], mode='bilinear')
+        depthPredLarge = F.interpolate(depthPreds[0], [newEnvHeight, newEnvWidth ], mode='bilinear')
 
-        diffusePredLarge = F.interpolate(diffusePred, [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        specularPredLarge = F.interpolate(specularPred, [newImHeight[1], newImWidth[1] ], mode='bilinear')
+        diffusePredLarge = F.interpolate(diffusePred, [newEnvHeight, newEnvWidth ], mode='bilinear')
+        specularPredLarge = F.interpolate(specularPred, [newEnvHeight, newEnvWidth ], mode='bilinear')
 
         inputBatch = torch.cat([imBatches[1], albedoPredLarge,
             0.5 * (normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge,
@@ -434,7 +377,6 @@ for imName in imList:
         depthPred = depthPred.view(bn, -1)
         depthPred = depthPred / torch.clamp(torch.mean(depthPred, dim=1), min=1e-10).unsqueeze(1) / 3.0
         depthPred = depthPred.view(bn, ch, nrow, ncol)
-
 
         albedoPreds.append(albedoPred )
         normalPreds.append(normalPred )
@@ -466,142 +408,19 @@ for imName in imList:
         bn, SGNum, _, envRow, envCol = axisPred.size()
         envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
         envmapsPreds.append(envmapsPred )
-
-        envmapsPredImage, axisPred, lambPred, weightPred = output2env.output2env(axisPred, lambPred, weightPred )
-        envmapsPredImages.append(envmapsPredImage )
-
-        diffusePred, specularPred = renderLayer.forwardEnv(albedoPreds[1], normalPreds[1],
-                roughPreds[1], envmapsPredImages[1] )
-
-        diffusePredNew, specularPredNew = models.LSregressDiffSpec(
-                diffusePred,
-                specularPred,
-                imBatchSmall,
-                diffusePred, specularPred )
-
-        renderedPre = diffusePredNew + specularPredNew
-        renderedPreds.append(renderedPred )
-
-        cDiff, cSpec = (torch.sum(diffusePredNew) / torch.sum(diffusePred)).data.item(), ((torch.sum(specularPredNew) ) / (torch.sum(specularPred) ) ).data.item()
-        if cSpec == 0:
-            cAlbedo = 1/ albedoPreds[-1].max().data.item()
-            cLight = cDiff / cAlbedo
-        else:
-            cLight = cSpec
-            cAlbedo = cDiff / cLight
-            cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
-            cLight = cDiff / cAlbedo
-        envmapsPredImages[-1] = envmapsPredImages[-1] * cLight
-        cAlbedos.append(cAlbedo )
-        cLights.append(cLight )
-
-        diffusePred = diffusePredNew
-        specularPred = specularPredNew
+    '''
 
     #################### Output Results #######################
-    # Save the albedo
-    for n in range(0, len(albedoPreds ) ):
-        if n < len(cAlbedos ):
-            albedoPred = (albedoPreds[n] * cAlbedos[n]).data.cpu().numpy().squeeze()
-        else:
-            albedoPred = albedoPreds[n].data.cpu().numpy().squeeze()
-
-        albedoPred = albedoPred.transpose([1, 2, 0] )
-        albedoPred = (albedoPred ) ** (1.0/2.2 )
-        albedoPred = cv2.resize(albedoPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-        albedoPredIm = (np.clip(255 * albedoPred, 0, 255) ).astype(np.uint8)
-
-        cv2.imwrite(albedoImNames[n], albedoPredIm[:, :, ::-1] )
-
-    # Save the normal
-    for n in range(0, len(normalPreds ) ):
-        normalPred = normalPreds[n].data.cpu().numpy().squeeze()
-        normalPred = normalPred.transpose([1, 2, 0] )
-        normalPred = cv2.resize(normalPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-        normalPredIm = (255 * 0.5*(normalPred+1) ).astype(np.uint8)
-        cv2.imwrite(normalImNames[n], normalPredIm[:, :, ::-1] )
-
-    # Save the rough
-    for n in range(0, len(roughPreds ) ):
-        roughPred = roughPreds[n].data.cpu().numpy().squeeze()
-        roughPred = cv2.resize(roughPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-        roughPredIm = (255 * 0.5*(roughPred+1) ).astype(np.uint8)
-        cv2.imwrite(roughImNames[n], roughPredIm )
-
-    # Save the depth
-    for n in range(0, len(depthPreds ) ):
-        depthPred = depthPreds[n].data.cpu().numpy().squeeze()
-
-        depthPred = depthPred / np.maximum(depthPred.mean(), 1e-10) * 3
-        depthPred = cv2.resize(depthPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-        depthOut = 1 / np.clip(depthPred+1, 1e-6, 10)
-        depthPredIm = (255 * depthOut ).astype(np.uint8)
-        cv2.imwrite(depthImNames[n], depthPredIm )
-
-    if opt.isBS:
-        # Save the albedo bs
-        for n in range(0, len(albedoBSPreds ) ):
-            if n < len(cAlbedos ):
-                albedoBSPred = (albedoBSPreds[n] * cAlbedos[n]).data.cpu().numpy().squeeze()
-            else:
-                albedoBSPred = albedoBSPreds[n].data.cpu().numpy().squeeze()
-            albedoBSPred = albedoBSPred.transpose([1, 2, 0] )
-            albedoBSPred = (albedoBSPred ) ** (1.0/2.2 )
-            albedoBSPred = cv2.resize(albedoBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            albedoBSPredIm = ( np.clip(255 * albedoBSPred, 0, 255) ).astype(np.uint8)
-            cv2.imwrite(albedoImNames[n].replace('albedo', 'albedoBS'), albedoBSPredIm[:, :, ::-1] )
-
-        # Save the rough bs
-        for n in range(0, len(roughBSPreds ) ):
-            roughBSPred = roughBSPreds[n].data.cpu().numpy().squeeze()
-            roughBSPred = cv2.resize(roughBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            roughBSPredIm = (255 * 0.5*(roughBSPred+1) ).astype(np.uint8)
-            cv2.imwrite(roughImNames[n].replace('rough', 'roughBS'), roughBSPredIm )
-
-
-        for n in range(0, len(depthBSPreds) ):
-            depthBSPred = depthBSPreds[n].data.cpu().numpy().squeeze()
-
-            depthBSPred = depthBSPred / np.maximum(depthBSPred.mean(), 1e-10) * 3
-            depthBSPred = cv2.resize(depthBSPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            depthOut = 1 / np.clip(depthBSPred+1, 1e-6, 10)
-            depthBSPredIm = (255 * depthOut ).astype(np.uint8)
-            cv2.imwrite(depthImNames[n].replace('depth', 'depthBS'), depthBSPredIm )
-
     if opt.isLight:
         # Save the envmapImages
-        for n in range(0, len(envmapsPredImages ) ):
-            envmapsPredImage = envmapsPredImages[n].data.cpu().numpy().squeeze()
-            envmapsPredImage = envmapsPredImage.transpose([1, 2, 3, 4, 0] )
-            #utils.writeEnvToFile(envmapsPredImages[n], 0, envmapPredImNames[n], nrows=24, ncols=16 )
-
-        for n in range(0, len(envmapsPreds ) ):
-            envmapsPred = envmapsPreds[n].data.cpu().numpy()
-            shading = utils.predToShading(cp.asarray(envmapsPred), SGNum = opt.SGNum )
+        for n in range(1, len(envmapsPreds ) ):
+            envmapsPred = cupy.asarray(envmapsPreds[n])#envmapsPreds[n].data.cpu().numpy()
+            shading = utils.predToShading(envmapsPred, SGNum = opt.SGNum )
             shading = shading.transpose([1, 2, 0] )
             shading = shading / np.mean(shading ) / 3.0
             shading = np.clip(shading, 0, 1)
             shading = (255 * shading ** (1.0/2.2) ).astype(np.uint8 )
             cv2.imwrite(shadingNames[n], shading[:, :, ::-1] )
-
-        # Save the rendered image
-        for n in range(0, len(renderedPreds ) ):
-            renderedPred = renderedPreds[n].data.cpu().numpy().squeeze()
-            renderedPred = renderedPred.transpose([1, 2, 0] )
-            renderedPred = (renderedPred / renderedPred.max() ) ** (1.0/2.2)
-            renderedPred = cv2.resize(renderedPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-            #np.save(renderedNames[n], renderedPred )
-
-            renderedPred = (np.clip(renderedPred, 0, 1) * 255).astype(np.uint8 )
-            cv2.imwrite(renderedImNames[n], renderedPred[:, :, ::-1] )
-
-    # Save the image
-    cv2.imwrite(imOutputNames[0], im_cpu[:,:, ::-1] )
+    print("Processed image {}".format(time.time()-procimgstarttick))
+print("Total Time {}".format(time.time()-starttick))
 

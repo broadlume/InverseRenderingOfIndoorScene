@@ -1,5 +1,6 @@
 from __future__ import print_function
-import numpy as np
+#import numpy as np
+import cupy as np
 from PIL import Image
 import cv2
 import os.path as osp
@@ -192,4 +193,4 @@ def predToShading(pred, envWidth = 32, envHeight = 16, SGNum = 12 ):
     shading = np.sum(shading, axis = 3)
     shading = np.maximum(shading, 0.0)
 
-    return shading
+    return np.asnumpy(shading)

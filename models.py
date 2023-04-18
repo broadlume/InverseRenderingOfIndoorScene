@@ -28,9 +28,7 @@ def LSregressDiffSpec(diff, spec, imOrig, diffOrig, specOrig ):
     diff = diff * mask 
     spec = spec * mask 
     im = imOrig * mask
-    print("diff shape: {}".format(diff.shape))
-    print("im shape: {}".format(im.shape))
-    print("nb: {}".format(nb))
+
     diff = diff.view(nb, -1)
     spec = spec.view(nb, -1)
     #im = im.view(nb, -1)
