@@ -12,6 +12,8 @@ import cv2
 import torch.nn.functional as F
 import utils
 
+from InvRenderModels import BrdfModel0, BrdfModel1
+
 from pytictoc import TicToc
 
 tictoc = TicToc();
@@ -22,10 +24,10 @@ inputHeight = 240
 
 parser = argparse.ArgumentParser()
 # The locationi of testing set
-parser.add_argument('--dataRoot', help='path to real images')
-parser.add_argument('--imList', help='path to image list')
+parser.add_argument('--dataRoot', default='../datasets/test_images_png', help='path to real images')
+parser.add_argument('--imList', default='imList_20.txt', help='path to image list')
 
-parser.add_argument('--testRoot', help='the path to save the testing errors' )
+parser.add_argument('--testRoot', default='Real20', help='the path to save the testing errors' )
 
 parser.add_argument('--envRow', type=int, default=120, help='the height /width of the envmap predictions')
 parser.add_argument('--envCol', type=int, default=160, help='the height /width of the envmap predictions')
@@ -35,11 +37,11 @@ parser.add_argument('--envWidth', type=int, default=16, help='the height /width 
 parser.add_argument('--SGNum', type=int, default=12, help='the number of spherical Gaussian lobes')
 parser.add_argument('--offset', type=float, default=1, help='the offset when train the lighting network')
 
-parser.add_argument('--cuda', action = 'store_true', help='enables cuda')
+parser.add_argument('--cuda', default=True, action = 'store_true', help='enables cuda')
 parser.add_argument('--deviceIds', type=int, nargs='+', default=[0], help='the gpus used for testing network')
 
 parser.add_argument('--level', type=int, default=2, help='the cascade level')
-parser.add_argument('--isLight', action='store_true', help='whether to predict lightig')
+parser.add_argument('--isLight', default=True, action='store_true', help='whether to predict lightig')
 
 # Image Picking
 opt = parser.parse_args()
@@ -68,11 +70,8 @@ torch.manual_seed(opt.seed )
 opt.batchSize = 1
 
 
-encoders = []
-albedoDecoders = []
-normalDecoders = []
-roughDecoders = []
-depthDecoders = []
+brdfModel0 = BrdfModel0(device)
+brdfModel1 = BrdfModel1(device)
 
 lightEncoders= []
 axisDecoders = []
@@ -83,25 +82,6 @@ tictoc.tic()
 
 imBatchSmall = Variable(torch.FloatTensor(opt.batchSize, 3, opt.envRow, opt.envCol ) )
 for n in range(0, opt.level ):
-    # BRDF Predictioins
-    encoders.append(models.encoder0(cascadeLevel = n).eval().to(device) )
-    albedoDecoders.append(models.decoder0(mode=0).eval().to(device) )
-    normalDecoders.append(models.decoder0(mode=1).eval().to(device) )
-    roughDecoders.append(models.decoder0(mode=2).eval().to(device) )
-    depthDecoders.append(models.decoder0(mode=4).eval().to(device) )
-
-    # Load weight
-    encoders[n].load_state_dict(
-            torch.load('{0}/encoder{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
-    albedoDecoders[n].load_state_dict(
-            torch.load('{0}/albedo{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
-    normalDecoders[n].load_state_dict(
-            torch.load('{0}/normal{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
-    roughDecoders[n].load_state_dict(
-            torch.load('{0}/rough{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
-    depthDecoders[n].load_state_dict(
-            torch.load('{0}/depth{1}_{2}.pth'.format(experiments[n], n, nepochs[n]-1) ).state_dict() )
-
     if opt.isLight or (opt.level == 2 and n == 0):
         # Light network
         lightEncoders.append(models.encoderLight(cascadeLevel = n, SGNum = opt.SGNum).eval().to(device) )
@@ -124,10 +104,6 @@ print("Loaded models")
 tictoc.toc()
 tictoc.tic()
 
-####################################
-
-print("Sent models to gpy")
-tictoc.toc()
 
 
 ####################################
@@ -239,26 +215,7 @@ for imName in imList:
     cLights = []
 
     ################# BRDF Prediction ######################
-    inputBatch = imBatches[0]
-    with torch.no_grad():
-        x1, x2, x3, x4, x5, x6 = encoders[0](inputBatch )
-
-    
-        albedoPred = 0.5 * (albedoDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
-        normalPred = normalDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6)
-        roughPred = roughDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6 )
-        depthPred = 0.5 * (depthDecoders[0](imBatches[0], x1, x2, x3, x4, x5, x6) + 1)
-
-    # Normalize Albedo and depth
-    bn, ch, nrow, ncol = albedoPred.size()
-    albedoPred = albedoPred.view(bn, -1)
-    albedoPred = albedoPred / torch.clamp(torch.mean(albedoPred, dim=1), min=1e-10).unsqueeze(1) / 3.0
-    albedoPred = albedoPred.view(bn, ch, nrow, ncol)
-
-    bn, ch, nrow, ncol = depthPred.size()
-    depthPred = depthPred.view(bn, -1)
-    depthPred = depthPred / torch.clamp(torch.mean(depthPred, dim=1), min=1e-10).unsqueeze(1) / 3.0
-    depthPred = depthPred.view(bn, ch, nrow, ncol)
+    albedoPred, normalPred, roughPred, depthPred = brdfModel0(imBatches[0])
 
     albedoPreds.append(albedoPred )
     normalPreds.append(normalPred )
@@ -326,36 +283,10 @@ for imName in imList:
 
     #################### BRDF Prediction ####################
     if opt.level == 2:
-        albedoPredLarge = F.interpolate(albedoPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        normalPredLarge = F.interpolate(normalPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        roughPredLarge = F.interpolate(roughPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-        depthPredLarge = F.interpolate(depthPreds[0], [newImHeight[1], newImWidth[1] ], mode='bilinear')
-
         diffusePredLarge = F.interpolate(diffusePred, [newImHeight[1], newImWidth[1] ], mode='bilinear')
         specularPredLarge = F.interpolate(specularPred, [newImHeight[1], newImWidth[1] ], mode='bilinear')
-
-        inputBatch = torch.cat([imBatches[1], albedoPredLarge,
-            0.5 * (normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge,
-            diffusePredLarge, specularPredLarge], dim=1)
-
-        with torch.no_grad():
-            x1, x2, x3, x4, x5, x6 = encoders[1](inputBatch )
-            albedoPred = 0.5 * (albedoDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
-            normalPred = normalDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6)
-            roughPred = roughDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6 )
-            depthPred = 0.5 * (depthDecoders[1](imBatches[1], x1, x2, x3, x4, x5, x6) + 1)
-
-        # Normalize Albedo and depth
-        bn, ch, nrow, ncol = albedoPred.size()
-        albedoPred = albedoPred.view(bn, -1)
-        albedoPred = albedoPred / torch.clamp(torch.mean(albedoPred, dim=1), min=1e-10).unsqueeze(1) / 3.0
-        albedoPred = albedoPred.view(bn, ch, nrow, ncol)
-
-        bn, ch, nrow, ncol = depthPred.size()
-        depthPred = depthPred.view(bn, -1)
-        depthPred = depthPred / torch.clamp(torch.mean(depthPred, dim=1), min=1e-10).unsqueeze(1) / 3.0
-        depthPred = depthPred.view(bn, ch, nrow, ncol)
-
+        
+        albedoPred, normalPred, roughPred, depthPred = brdfModel1(imBatches[0], albedoPreds[0], normalPreds[0], roughPreds[0], depthPreds[0], diffusePredLarge, specularPredLarge)
 
         albedoPreds.append(albedoPred )
         normalPreds.append(normalPred )
