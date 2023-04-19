@@ -12,7 +12,7 @@ import cv2
 import torch.nn.functional as F
 import utils
 
-from InvRenderModels import BrdfModel0, BrdfModel1
+from InvRenderModels import BrdfModel0, BrdfModel1, LightModel
 
 from pytictoc import TicToc
 
@@ -20,6 +20,10 @@ tictoc = TicToc();
 
 inputWidth = 320
 inputHeight = 240
+envInputWidth = 160
+envInputHeight = 120
+envRenderWidth = 16
+envRenderHeight = 8
 
 
 parser = argparse.ArgumentParser()
@@ -70,8 +74,11 @@ torch.manual_seed(opt.seed )
 opt.batchSize = 1
 
 
-brdfModel0 = BrdfModel0(device)
-brdfModel1 = BrdfModel1(device)
+brdfModel0 = BrdfModel0(inputWidth, inputHeight, device)
+brdfModel1 = BrdfModel1(inputWidth, inputHeight, device)
+lightModel0 = LightModel(0, inputWidth, inputHeight, envInputWidth, envInputHeight, envRenderWidth, envRenderHeight, device)
+lightModel1 = LightModel(1, inputWidth, inputHeight, envInputWidth, envInputHeight, envRenderWidth, envRenderHeight, device)
+
 
 lightEncoders= []
 axisDecoders = []
@@ -224,6 +231,8 @@ for imName in imList:
 
     ################# Lighting Prediction ###################
     if opt.isLight or opt.level == 2:
+
+        '''
         # Interpolation
         imBatchLarge = F.interpolate(imBatches[0], [imBatchSmall.size(2) *
             4, imBatchSmall.size(3) * 4], mode='bilinear')
@@ -257,6 +266,10 @@ for imName in imList:
         diffusePred, specularPred = renderLayer.forwardEnv(albedoPreds[0], normalPreds[0],
                 roughPreds[0], envmapsPredImages[0] )
 
+        '''
+        diffusePred, specularPred, envmapsPred = lightModel0(imBatches[0], imBatchSmall, albedoPreds[0], normalPreds[0], roughPreds[0], depthPreds[0])
+        envmapsPreds.append(envmapsPred)
+
         diffusePredNew, specularPredNew = models.LSregressDiffSpec(
                 diffusePred,
                 specularPred,
@@ -274,7 +287,7 @@ for imName in imList:
             cAlbedo = cDiff / cLight
             cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
             cLight = cDiff / cAlbedo
-        envmapsPredImages[0] = envmapsPredImages[0] * cLight
+        #envmapsPredImages[0] = envmapsPredImages[0] * cLight
         cAlbedos.append(cAlbedo )
         cLights.append(cLight )
 
@@ -295,6 +308,7 @@ for imName in imList:
 
     ############### Lighting Prediction ######################
     if opt.level == 2 and opt.isLight:
+        '''
         # Interpolation
         imBatchLarge = F.interpolate(imBatches[1], [imBatchSmall.size(2) *
             4, imBatchSmall.size(3) * 4], mode='bilinear')
@@ -327,6 +341,10 @@ for imName in imList:
 
         diffusePred, specularPred = renderLayer.forwardEnv(albedoPreds[1], normalPreds[1],
                 roughPreds[1], envmapsPredImages[1] )
+        '''
+
+        diffusePred, specularPred, envmapsPred = lightModel1(imBatches[0], imBatchSmall, albedoPreds[1], normalPreds[1], roughPreds[1], depthPreds[1], envmapsPred) 
+        envmapsPreds.append(envmapsPred)
 
         diffusePredNew, specularPredNew = models.LSregressDiffSpec(
                 diffusePred,
@@ -346,7 +364,7 @@ for imName in imList:
             cAlbedo = cDiff / cLight
             cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
             cLight = cDiff / cAlbedo
-        envmapsPredImages[-1] = envmapsPredImages[-1] * cLight
+        #envmapsPredImages[-1] = envmapsPredImages[-1] * cLight
         cAlbedos.append(cAlbedo )
         cLights.append(cLight )
 
