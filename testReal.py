@@ -12,7 +12,7 @@ import cv2
 import torch.nn.functional as F
 import utils
 
-from InvRenderModels import BrdfModel0, BrdfModel1, LightModel
+from InvRenderModels import InvRenderModel
 
 from pytictoc import TicToc
 
@@ -30,16 +30,9 @@ parser = argparse.ArgumentParser()
 # The locationi of testing set
 parser.add_argument('--dataRoot', default='../datasets/test_images_png', help='path to real images')
 parser.add_argument('--imList', default='imList_20.txt', help='path to image list')
-
 parser.add_argument('--testRoot', default='Real20', help='the path to save the testing errors' )
 
-parser.add_argument('--envRow', type=int, default=120, help='the height /width of the envmap predictions')
-parser.add_argument('--envCol', type=int, default=160, help='the height /width of the envmap predictions')
-parser.add_argument('--envHeight', type=int, default=8, help='the height /width of the envmap predictions')
-parser.add_argument('--envWidth', type=int, default=16, help='the height /width of the envmap predictions')
-
 parser.add_argument('--SGNum', type=int, default=12, help='the number of spherical Gaussian lobes')
-parser.add_argument('--offset', type=float, default=1, help='the offset when train the lighting network')
 
 parser.add_argument('--cuda', default=True, action = 'store_true', help='enables cuda')
 parser.add_argument('--deviceIds', type=int, nargs='+', default=[0], help='the gpus used for testing network')
@@ -56,8 +49,6 @@ device = 'cpu'
 if opt.cuda:
     device = 'cuda:{0}'.format(opt.gpuId)
 
-experiments = ['models/check_cascade0_w320_h240', 'models/check_cascade1_w320_h240' ]
-experimentsLight = ['models/check_cascadeLight0_sg12_offset1', 'models/check_cascadeLight1_sg12_offset1' ]
 nepochs = [14, 7]
 nepochsLight = [10, 10 ]
 
@@ -73,37 +64,11 @@ torch.manual_seed(opt.seed )
 
 opt.batchSize = 1
 
-
-brdfModel0 = BrdfModel0(inputWidth, inputHeight, device)
-brdfModel1 = BrdfModel1(inputWidth, inputHeight, device)
-lightModel0 = LightModel(0, inputWidth, inputHeight, envInputWidth, envInputHeight, envRenderWidth, envRenderHeight, device)
-lightModel1 = LightModel(1, inputWidth, inputHeight, envInputWidth, envInputHeight, envRenderWidth, envRenderHeight, device)
-
-
-lightEncoders= []
-axisDecoders = []
-lambDecoders = []
-weightDecoders = []
+invRenderModel = InvRenderModel(inputWidth, inputHeight, envInputWidth, envInputHeight, envRenderWidth, envRenderHeight, device)
 
 tictoc.tic()
 
-imBatchSmall = Variable(torch.FloatTensor(opt.batchSize, 3, opt.envRow, opt.envCol ) )
-for n in range(0, opt.level ):
-    if opt.isLight or (opt.level == 2 and n == 0):
-        # Light network
-        lightEncoders.append(models.encoderLight(cascadeLevel = n, SGNum = opt.SGNum).eval().to(device) )
-        axisDecoders.append(models.decoderLight(mode=0, SGNum = opt.SGNum ).eval().to(device) )
-        lambDecoders.append(models.decoderLight(mode=1, SGNum = opt.SGNum ).eval().to(device) )
-        weightDecoders.append(models.decoderLight(mode=2, SGNum = opt.SGNum ).eval().to(device) )
-
-        lightEncoders[n].load_state_dict(
-                torch.load('{0}/lightEncoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
-        axisDecoders[n].load_state_dict(
-                torch.load('{0}/axisDecoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
-        lambDecoders[n].load_state_dict(
-                torch.load('{0}/lambDecoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
-        weightDecoders[n].load_state_dict(
-                torch.load('{0}/weightDecoder{1}_{2}.pth'.format(experimentsLight[n], n, nepochsLight[n]-1) ).state_dict() )
+imBatchSmall = Variable(torch.FloatTensor(opt.batchSize, 3, envInputHeight, envInputWidth ) )
 
 #########################################
 
@@ -189,12 +154,12 @@ for imName in imList:
     newEnvWidth, newEnvHeight, fov = 0, 0, 0
     if nh < nw:
         fov = 57
-        newW = opt.envCol
-        newH = int(float(opt.envCol ) / float(nw) * nh )
+        newW = envInputWidth
+        newH = int(float(envInputWidth ) / float(nw) * nh )
     else:
         fov = 42.75
-        newH = opt.envRow
-        newW = int(float(opt.envRow ) / float(nh) * nw )
+        newH = envInputHeight
+        newW = int(float(envInputHeight ) / float(nh) * nw )
 
     if nh < newH:
         im = cv2.resize(im_cpu, (newW, newH), interpolation = cv2.INTER_AREA )
@@ -207,19 +172,13 @@ for imName in imList:
     im = (np.transpose(im, [2, 0, 1] ).astype(np.float32 ) / 255.0 )[np.newaxis, :, :, :]
     im = im / im.max()
     imBatchSmall = Variable(torch.from_numpy(im**(2.2) ) ).to(device)
-    renderLayer = models.renderingLayer(isCuda = opt.cuda,
-            imWidth=newEnvWidth, imHeight=newEnvHeight, fov = fov,
-            envWidth = opt.envWidth, envHeight = opt.envHeight)
 
-    output2env = models.output2env(isCuda = opt.cuda,
-            envWidth = opt.envWidth, envHeight = opt.envHeight, SGNum = opt.SGNum )
-
+    '''
     ########################################################
     # Build the cascade network architecture #
     albedoPreds, normalPreds, roughPreds, depthPreds = [], [], [], []
     envmapsPreds, envmapsPredImages, renderedPreds = [], [], []
-    cAlbedos = []
-    cLights = []
+
 
     ################# BRDF Prediction ######################
     albedoPred, normalPred, roughPred, depthPred = brdfModel0(imBatches[0])
@@ -232,67 +191,8 @@ for imName in imList:
     ################# Lighting Prediction ###################
     if opt.isLight or opt.level == 2:
 
-        '''
-        # Interpolation
-        imBatchLarge = F.interpolate(imBatches[0], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        albedoPredLarge = F.interpolate(albedoPreds[0], [imBatchSmall.size(2)*
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        normalPredLarge = F.interpolate(normalPreds[0], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        roughPredLarge = F.interpolate(roughPreds[0], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        depthPredLarge = F.interpolate(depthPreds[0], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-
-        inputBatch = torch.cat([imBatchLarge, albedoPredLarge,
-            0.5*(normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge ], dim=1 )
-
-        with torch.no_grad():
-            x1, x2, x3, x4, x5, x6 = lightEncoders[0](inputBatch )
-
-            # Prediction
-            axisPred = axisDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
-            lambPred = lambDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
-            weightPred = weightDecoders[0](x1, x2, x3, x4, x5, x6, imBatchSmall )
-
-        bn, SGNum, _, envRow, envCol = axisPred.size()
-        envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
-        envmapsPreds.append(envmapsPred )
-
-        envmapsPredImage, axisPred, lambPred, weightPred = output2env.output2env(axisPred, lambPred, weightPred )
-        envmapsPredImages.append(envmapsPredImage )
-
-        diffusePred, specularPred = renderLayer.forwardEnv(albedoPreds[0], normalPreds[0],
-                roughPreds[0], envmapsPredImages[0] )
-
-        '''
         diffusePred, specularPred, envmapsPred = lightModel0(imBatches[0], imBatchSmall, albedoPreds[0], normalPreds[0], roughPreds[0], depthPreds[0])
         envmapsPreds.append(envmapsPred)
-
-        diffusePredNew, specularPredNew = models.LSregressDiffSpec(
-                diffusePred,
-                specularPred,
-                imBatchSmall,
-                diffusePred, specularPred )
-        renderedPred = diffusePredNew + specularPredNew
-        renderedPreds.append(renderedPred )
-
-        cDiff, cSpec = (torch.sum(diffusePredNew) / torch.sum(diffusePred )).data.item(), ((torch.sum(specularPredNew) ) / (torch.sum(specularPred) ) ).data.item()
-        if cSpec < 1e-3:
-            cAlbedo = 1/ albedoPreds[-1].max().data.item()
-            cLight = cDiff / cAlbedo
-        else:
-            cLight = cSpec
-            cAlbedo = cDiff / cLight
-            cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
-            cLight = cDiff / cAlbedo
-        #envmapsPredImages[0] = envmapsPredImages[0] * cLight
-        cAlbedos.append(cAlbedo )
-        cLights.append(cLight )
-
-        diffusePred = diffusePredNew
-        specularPred = specularPredNew
 
     #################### BRDF Prediction ####################
     if opt.level == 2:
@@ -308,76 +208,15 @@ for imName in imList:
 
     ############### Lighting Prediction ######################
     if opt.level == 2 and opt.isLight:
-        '''
-        # Interpolation
-        imBatchLarge = F.interpolate(imBatches[1], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        albedoPredLarge = F.interpolate(albedoPreds[1], [imBatchSmall.size(2)*
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        normalPredLarge = F.interpolate(normalPreds[1], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        roughPredLarge = F.interpolate(roughPreds[1], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-        depthPredLarge = F.interpolate(depthPreds[1], [imBatchSmall.size(2) *
-            4, imBatchSmall.size(3) * 4], mode='bilinear')
-
-        inputBatch = torch.cat([imBatchLarge, albedoPredLarge,
-            0.5*(normalPredLarge+1), 0.5*(roughPredLarge+1), depthPredLarge ], dim=1 )
-
-        with torch.no_grad():
-            x1, x2, x3, x4, x5, x6 = lightEncoders[1](inputBatch, envmapsPred )
-
-            # Prediction
-            axisPred = axisDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
-            lambPred = lambDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
-            weightPred = weightDecoders[1](x1, x2, x3, x4, x5, x6, imBatchSmall )
-
-        bn, SGNum, _, envRow, envCol = axisPred.size()
-        envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
-        envmapsPreds.append(envmapsPred )
-
-        envmapsPredImage, axisPred, lambPred, weightPred = output2env.output2env(axisPred, lambPred, weightPred )
-        envmapsPredImages.append(envmapsPredImage )
-
-        diffusePred, specularPred = renderLayer.forwardEnv(albedoPreds[1], normalPreds[1],
-                roughPreds[1], envmapsPredImages[1] )
-        '''
 
         diffusePred, specularPred, envmapsPred = lightModel1(imBatches[0], imBatchSmall, albedoPreds[1], normalPreds[1], roughPreds[1], depthPreds[1], envmapsPred) 
         envmapsPreds.append(envmapsPred)
 
-        diffusePredNew, specularPredNew = models.LSregressDiffSpec(
-                diffusePred,
-                specularPred,
-                imBatchSmall,
-                diffusePred, specularPred )
-
-        renderedPre = diffusePredNew + specularPredNew
-        renderedPreds.append(renderedPred )
-
-        cDiff, cSpec = (torch.sum(diffusePredNew) / torch.sum(diffusePred)).data.item(), ((torch.sum(specularPredNew) ) / (torch.sum(specularPred) ) ).data.item()
-        if cSpec == 0:
-            cAlbedo = 1/ albedoPreds[-1].max().data.item()
-            cLight = cDiff / cAlbedo
-        else:
-            cLight = cSpec
-            cAlbedo = cDiff / cLight
-            cAlbedo = np.clip(cAlbedo, 1e-3, 1 / albedoPreds[-1].max().data.item() )
-            cLight = cDiff / cAlbedo
-        #envmapsPredImages[-1] = envmapsPredImages[-1] * cLight
-        cAlbedos.append(cAlbedo )
-        cLights.append(cLight )
-
-        diffusePred = diffusePredNew
-        specularPred = specularPredNew
 
     #################### Output Results #######################
     # Save the albedo
     for n in range(0, len(albedoPreds ) ):
-        if n < len(cAlbedos ):
-            albedoPred = (albedoPreds[n] * cAlbedos[n]).data.cpu().numpy().squeeze()
-        else:
-            albedoPred = albedoPreds[n].data.cpu().numpy().squeeze()
+        albedoPred = albedoPreds[n].data.cpu().numpy().squeeze()
 
         albedoPred = albedoPred.transpose([1, 2, 0] )
         albedoPred = (albedoPred ) ** (1.0/2.2 )
@@ -424,16 +263,11 @@ for imName in imList:
             shading = np.clip(shading, 0, 1)
             shading = (255 * shading ** (1.0/2.2) ).astype(np.uint8 )
             cv2.imwrite(shadingNames[n], shading[:, :, ::-1] )
+    '''
 
-        # Save the rendered image
-        for n in range(0, len(renderedPreds ) ):
-            renderedPred = renderedPreds[n].data.cpu().numpy().squeeze()
-            renderedPred = renderedPred.transpose([1, 2, 0] )
-            renderedPred = (renderedPred / renderedPred.max() ) ** (1.0/2.2)
-            renderedPred = cv2.resize(renderedPred, (nw, nh), interpolation = cv2.INTER_LINEAR )
-
-            renderedPred = (np.clip(renderedPred, 0, 1) * 255).astype(np.uint8 )
-            cv2.imwrite(renderedImNames[n], renderedPred[:, :, ::-1] )
+    shading0, shading1 = invRenderModel(imBatches[0], imBatchSmall, 50)
+    cv2.imwrite(shadingNames[0], shading0)
+    cv2.imwrite(shadingNames[1], shading1)
 
     # Save the image
     cv2.imwrite(imOutputNames[0], im_cpu[:,:, ::-1] )

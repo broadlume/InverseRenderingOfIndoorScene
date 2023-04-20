@@ -2,7 +2,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
+import cupy as cp
 import models
+import utils
 
 class BrdfModel0(nn.Module):
 
@@ -135,7 +137,7 @@ class LightModel(nn.Module):
         self.weightDecoder.load_state_dict(torch.load('{0}/weightDecoder{1}_9.pth'.format(modelsroot, level) ).state_dict())    
 
 
-    def forward(self, img, imgSmall, albedo, normal, rough, depth, envmaps = None):
+    def forward(self, img, imgSmall, albedo, normal, rough, depth, fov, envmaps = None):
 
         # Interpolation
         imBatchLarge = F.interpolate(img, [imgSmall.size(2) *
@@ -164,7 +166,7 @@ class LightModel(nn.Module):
         envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
 
         self.renderLayer = models.renderingLayer(isCuda = True,
-                imWidth = imgSmall.shape[-1], imHeight = imgSmall.shape[-2], fov = 56,
+                imWidth = imgSmall.shape[-1], imHeight = imgSmall.shape[-2], fov = fov,
                 envWidth = self.envRenderWidth, envHeight = self.envRenderHeight)
 
         self.output2env = models.output2env(isCuda = True,
@@ -176,3 +178,43 @@ class LightModel(nn.Module):
                 rough, envmapsPredImage)
         
         return diffusePred, specularPred, envmapsPred
+    
+
+class InvRenderModel(nn.Module):
+
+    def __init__(self, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device):
+        super(InvRenderModel, self).__init__()
+
+        self.imgWidth = imgWidth
+        self.imgHeight = imgHeight
+        self.envWidth = envWidth
+        self.envHeight = envHeight
+        self.envRenderWidth = envRenderWidth
+        self.envRenderHeight = envRenderHeight
+        self.device = device
+
+        self.brdf0 = BrdfModel0(imgWidth, imgHeight, device)
+        self.brdf1 = BrdfModel1(imgWidth, imgHeight, device)
+        self.light0 = LightModel(0, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device)
+        self.light1 = LightModel(1, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device)
+
+    def forward(self, img, imgenv, fov):
+        albedoPred0, normalPred0, roughPred0, depthPred0 = self.brdf0(img)
+        diffusePred0, specularPred0, envmapsPred0 = self.light0(img, imgenv, albedoPred0, normalPred0, roughPred0, depthPred0, fov, envmaps = None)
+        
+        diffusePredLarge = F.interpolate(diffusePred0, [img.shape[-2], img.shape[-1]], mode='bilinear')
+        specularPredLarge = F.interpolate(specularPred0, [img.shape[-2], img.shape[-1]], mode='bilinear')
+        
+        albedoPred1, normalPred1, roughPred1, depthPred1 = self.brdf1(img, albedoPred0, normalPred0, roughPred0, depthPred0, diffusePredLarge, specularPredLarge)
+        diffusePred1, specularPred1, envmapsPred1 = self.light1(img, imgenv, albedoPred1, normalPred1, roughPred1, depthPred1, fov, envmaps = envmapsPred0)
+
+        return self.envPredictionToShadingImage(envmapsPred0.data.cpu().numpy()), self.envPredictionToShadingImage(envmapsPred1.data.cpu().numpy())
+
+
+    def envPredictionToShadingImage(self, envmapsPred):
+        shading = utils.predToShading(cp.asarray(envmapsPred), SGNum = 12 )
+        shading = shading.transpose([1, 2, 0] )
+        shading = shading / np.mean(shading ) / 3.0
+        shading = np.clip(shading, 0, 1)
+        shading = (255 * shading ** (1.0/2.2) ).astype(np.uint8 )
+        return shading[:, :, ::-1]
