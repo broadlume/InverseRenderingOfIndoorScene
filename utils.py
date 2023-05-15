@@ -1,6 +1,6 @@
 from __future__ import print_function
-#import numpy as np
-import cupy as np
+import numpy as np
+import cupy as cp
 from PIL import Image
 import cv2
 import os.path as osp
@@ -156,18 +156,19 @@ def writeNumpyEnvToFile(envmap, envName, nrows=12, ncols=8, envHeight=8, envWidt
 
 def predToShading(pred, envWidth = 32, envHeight = 16, SGNum = 12 ):
 
-    Az = ( (np.arange(envWidth) + 0.5) / envWidth - 0.5 )* 2 * np.pi
-    El = ( (np.arange(envHeight) + 0.5) / envHeight) * np.pi / 2.0
-    Az, El = np.meshgrid(Az, El)
-    Az = Az[np.newaxis, :, :]
-    El = El[np.newaxis, :, :]
-    lx = np.sin(El) * np.cos(Az)
-    ly = np.sin(El) * np.sin(Az)
-    lz = np.cos(El)
-    ls = np.concatenate((lx, ly, lz), axis = 0)
-    ls = ls[np.newaxis, :, np.newaxis, np.newaxis, :, :]
-    envWeight = np.cos(El) * np.sin(El )
-    envWeight = envWeight[np.newaxis, np.newaxis, np.newaxis, :, :]
+    Az = ( (cp.arange(envWidth) + 0.5) / envWidth - 0.5 )* 2 * cp.pi
+    El = ( (cp.arange(envHeight) + 0.5) / envHeight) * cp.pi / 2.0
+    Az, El = cp.meshgrid(Az, El)
+    Az = Az[cp.newaxis, :, :]
+    El = El[cp.newaxis, :, :]
+    lx = cp.sin(El) * cp.cos(Az)
+    ly = cp.sin(El) * cp.sin(Az)
+    lz = cp.cos(El)
+    ls = cp.concatenate((lx, ly, lz), axis = 0)
+    ldir_per_pixel = cp.transpose(ls, (1, 2, 0))
+    ls = ls[cp.newaxis, :, cp.newaxis, cp.newaxis, :, :]
+    envWeight = cp.cos(El) * cp.sin(El )
+    envWeight = envWeight[cp.newaxis, cp.newaxis, cp.newaxis, :, :]
 
     envRow, envCol = pred.shape[2], pred.shape[3]
     pred = pred.squeeze(0)
@@ -176,21 +177,76 @@ def predToShading(pred, envWidth = 32, envHeight = 16, SGNum = 12 ):
     weightOrig = pred[4*SGNum : 7*SGNum, :, :]
 
     weight = weightOrig.reshape([SGNum, 3, envRow, envCol] ) * 0.999
-    weight = np.tan(np.pi / 2.0 * weight )
-    weight = weight[:, :, :, :, np.newaxis, np.newaxis ]
+    weight = cp.tan(cp.pi / 2.0 * weight )
+    weight = weight[:, :, :, :, cp.newaxis, cp.newaxis ]
 
     axisDir = axisOrig.reshape([SGNum, 3, envRow, envCol] )
-    axisDir = axisDir[:, :, :, :, np.newaxis, np.newaxis]
+    axisDir = axisDir[:, :, :, :, cp.newaxis, cp.newaxis]
 
     lamb = lambOrig.reshape([SGNum, 1, envRow, envCol] ) * 0.999
-    lamb = np.tan(np.pi / 2.0 * lamb )
-    lamb = lamb[:, :, :, :, np.newaxis, np.newaxis]
+    lamb = cp.tan(cp.pi / 2.0 * lamb )
+    lamb = lamb[:, :, :, :, cp.newaxis, cp.newaxis]
 
-    mi = lamb * (np.sum(axisDir * ls, axis=1)[:, np.newaxis, :, :, :, :] - 1)
-    envmaps = np.sum(weight * np.exp(mi ), axis=0)
+    mi = lamb * (cp.sum(axisDir * ls, axis=1)[:, cp.newaxis, :, :, :, :] - 1)
+    envmaps = cp.sum(weight * cp.exp(mi ), axis=0)
 
-    shading = (envmaps * envWeight ).reshape([3, envRow, envCol, -1] )
-    shading = np.sum(shading, axis = 3)
-    shading = np.maximum(shading, 0.0)
+    shading = (envmaps * envWeight )
 
-    return np.asnumpy(shading)
+    lightweights = cp.transpose(shading, (0, 2, 3, 4, 5, 1))
+    lightweights = cp.sum(lightweights, axis=(0,1,2,))
+    lightweights = cp.sum(lightweights, axis=2)
+    lightdir_avg = cp.sum(lightweights[:, :, cp.newaxis] * ldir_per_pixel, axis=(0, 1))
+    lightdir_avg = lightdir_avg / cp.linalg.norm(lightdir_avg)
+    max_val = cp.max(lightweights)
+    mean_val = cp.mean(lightweights)
+    print("max_val: {}, mean_val: {}".format(max_val, mean_val))
+    max_index = cp.argmax(lightweights) # getting the index of the highest value
+    max_row_index, max_col_index = cp.unravel_index(max_index, lightweights.shape)
+    normalized_direction = ldir_per_pixel[max_row_index, max_col_index, :]
+    normalized_direction = -normalized_direction
+    normalized_direction = normalized_direction / cp.linalg.norm(normalized_direction)
+    #normalized_direction = lightdir_avg
+
+    shading = shading.reshape([3, envRow, envCol, -1] )
+    shading = cp.sum(shading, axis = 3)
+    shading = cp.maximum(shading, 0.0)
+
+    return cp.asnumpy(shading), normalized_direction.get(), mean_val
+
+def find_top_light_direction(envmaps, Az, El):
+    envmaps = np.transpose(envmaps, (0, 1, 4, 2, 3))
+    envHeight, envWidth, _, _, _ = envmaps.shape
+    argmax = np.argmax(envmaps.reshape(-1, envmaps.shape[-1]), axis=0)
+    argmax = np.stack((argmax // envWidth, argmax % envWidth), axis=-1)
+    intensities = envmaps[argmax[:, 0], argmax[:, 1], :]
+    directions = np.stack([np.sin(El[argmax[:, 0], argmax[:, 1]]) * np.cos(Az[argmax[:, 0], argmax[:, 1]]),
+                           np.sin(El[argmax[:, 0], argmax[:, 1]]) * np.sin(Az[argmax[:, 0], argmax[:, 1]]),
+                           np.cos(El[argmax[:, 0], argmax[:, 1]])], axis=1)
+    top_direction = directions[np.argmax(intensities)]
+    top_intensity = np.max(intensities)
+    return top_direction, top_intensity
+
+def find_top_k_light_directions(envmaps, envWidth, envHeight, Az, El, k=3):
+    envHeight, envWidth = envmaps.shape[1], envmaps.shape[2]
+    intensity_map = np.sum(envmaps, axis=0)
+    
+    # Find the top k indices
+    flat_intensity_map = intensity_map.ravel()
+    top_k_indices = np.argpartition(flat_intensity_map, -k)[-k:]
+    
+    # Convert the indices to pixel coordinates
+    top_k_pixel_coords = np.array(np.unravel_index(top_k_indices, intensity_map.shape)).T
+    
+    # Calculate azimuth and elevation
+    Az = ( (top_k_pixel_coords[:, 1] + 0.5) / envWidth - 0.5) * 2 * np.pi
+    El = ( (top_k_pixel_coords[:, 0] + 0.5) / envHeight) * np.pi / 2.0
+    
+    # Convert azimuth and elevation to Cartesian coordinates
+    lx = np.sin(El) * np.cos(Az)
+    ly = np.sin(El) * np.sin(Az)
+    lz = np.cos(El)
+    
+    light_directions = np.column_stack((lx, ly, lz))
+    intensities = flat_intensity_map[top_k_indices]
+    
+    return light_directions, intensities

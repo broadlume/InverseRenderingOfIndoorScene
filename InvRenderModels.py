@@ -8,13 +8,13 @@ import utils
 
 class BrdfModel0(nn.Module):
 
-    def __init__(self, imgWidth, imgHeight, device):
+    def __init__(self, imgWidth, imgHeight, device, path = 'models'):
         super(BrdfModel0, self).__init__()
 
         self.imgWidth = imgWidth
         self.imgHeight = imgHeight
 
-        modelsroot = 'models/check_cascade0_w320_h240'
+        modelsroot = '{0}/check_cascade0_w320_h240'.format(path)
 
         self.encoder = models.encoder0(cascadeLevel = 0).eval().to(device)
         self.encoder.load_state_dict(torch.load('{0}/encoder0_13.pth'.format(modelsroot)).state_dict())
@@ -56,13 +56,13 @@ class BrdfModel0(nn.Module):
 
 class BrdfModel1(nn.Module):
 
-    def __init__(self, imgWidth, imgHeight, device):
+    def __init__(self, imgWidth, imgHeight, device, path = 'models'):
         super(BrdfModel1, self).__init__()
 
         self.imgWidth = imgWidth
         self.imgHeight = imgHeight
 
-        modelsroot = 'models/check_cascade1_w320_h240'
+        modelsroot = '{0}/check_cascade1_w320_h240'.format(path)
 
         self.encoder = models.encoder0(cascadeLevel = 1).eval().to(device)
         self.encoder.load_state_dict(torch.load('{0}/encoder1_6.pth'.format(modelsroot)).state_dict())
@@ -109,7 +109,7 @@ class BrdfModel1(nn.Module):
 
 class LightModel(nn.Module):
 
-    def __init__(self, level, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device):
+    def __init__(self, level, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device, path = 'models'):
         super(LightModel, self).__init__()
 
         self.level = level
@@ -121,7 +121,7 @@ class LightModel(nn.Module):
         self.envRenderHeight = envRenderHeight
 
         isCuda = "cuda" in str(device)
-        modelsroot = 'models/check_cascadeLight{0}_sg12_offset1'.format(level)
+        modelsroot = '{0}/check_cascadeLight{1}_sg12_offset1'.format(path, level)
         SGNum = 12
 
         self.lightEncoder = models.encoderLight(cascadeLevel = level, SGNum = SGNum).eval().to(device)
@@ -182,7 +182,7 @@ class LightModel(nn.Module):
 
 class InvRenderModel(nn.Module):
 
-    def __init__(self, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device):
+    def __init__(self, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device, path = 'models'):
         super(InvRenderModel, self).__init__()
 
         self.imgWidth = imgWidth
@@ -193,10 +193,10 @@ class InvRenderModel(nn.Module):
         self.envRenderHeight = envRenderHeight
         self.device = device
 
-        self.brdf0 = BrdfModel0(imgWidth, imgHeight, device)
-        self.brdf1 = BrdfModel1(imgWidth, imgHeight, device)
-        self.light0 = LightModel(0, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device)
-        self.light1 = LightModel(1, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device)
+        self.brdf0 = BrdfModel0(imgWidth, imgHeight, device, path)
+        self.brdf1 = BrdfModel1(imgWidth, imgHeight, device, path)
+        self.light0 = LightModel(0, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device, path)
+        self.light1 = LightModel(1, imgWidth, imgHeight, envWidth, envHeight, envRenderWidth, envRenderHeight, device, path)
 
     def forward(self, img, imgenv, fov):
         albedoPred0, normalPred0, roughPred0, depthPred0 = self.brdf0(img)
@@ -208,13 +208,16 @@ class InvRenderModel(nn.Module):
         albedoPred1, normalPred1, roughPred1, depthPred1 = self.brdf1(img, albedoPred0, normalPred0, roughPred0, depthPred0, diffusePredLarge, specularPredLarge)
         diffusePred1, specularPred1, envmapsPred1 = self.light1(img, imgenv, albedoPred1, normalPred1, roughPred1, depthPred1, fov, envmaps = envmapsPred0)
 
-        return self.envPredictionToShadingImage(envmapsPred0.data.cpu().numpy()), self.envPredictionToShadingImage(envmapsPred1.data.cpu().numpy())
+        #shad0, top_k_light_directions0, top_k_intensities0 = self.envPredictionToShadingImage(envmapsPred0.data.cpu().numpy())
+        shad1, top_k_light_directions1, top_k_intensities1 = self.envPredictionToShadingImage(envmapsPred1.data.cpu().numpy())
+
+        return shad1, top_k_light_directions1, top_k_intensities1
 
 
     def envPredictionToShadingImage(self, envmapsPred):
-        shading = utils.predToShading(cp.asarray(envmapsPred), SGNum = 12 )
+        shading, top_k_light_directions, top_k_intensities = utils.predToShading(cp.asarray(envmapsPred), SGNum = 12 )
         shading = shading.transpose([1, 2, 0] )
         shading = shading / np.mean(shading ) / 3.0
         shading = np.clip(shading, 0, 1)
         shading = (255 * shading ** (1.0/2.2) ).astype(np.uint8 )
-        return shading[:, :, ::-1]
+        return shading[:, :, ::-1], top_k_light_directions, top_k_intensities
