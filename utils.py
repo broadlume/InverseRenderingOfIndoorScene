@@ -197,9 +197,7 @@ def predToShading(pred, envWidth = 32, envHeight = 16, SGNum = 12 ):
     lightweights = cp.sum(lightweights, axis=2)
     lightdir_avg = cp.sum(lightweights[:, :, cp.newaxis] * ldir_per_pixel, axis=(0, 1))
     lightdir_avg = lightdir_avg / cp.linalg.norm(lightdir_avg)
-    max_val = cp.max(lightweights)
     mean_val = cp.mean(lightweights)
-    print("max_val: {}, mean_val: {}".format(max_val, mean_val))
     max_index = cp.argmax(lightweights) # getting the index of the highest value
     max_row_index, max_col_index = cp.unravel_index(max_index, lightweights.shape)
     normalized_direction = ldir_per_pixel[max_row_index, max_col_index, :]
@@ -213,40 +211,3 @@ def predToShading(pred, envWidth = 32, envHeight = 16, SGNum = 12 ):
 
     return cp.asnumpy(shading), normalized_direction.get(), mean_val
 
-def find_top_light_direction(envmaps, Az, El):
-    envmaps = np.transpose(envmaps, (0, 1, 4, 2, 3))
-    envHeight, envWidth, _, _, _ = envmaps.shape
-    argmax = np.argmax(envmaps.reshape(-1, envmaps.shape[-1]), axis=0)
-    argmax = np.stack((argmax // envWidth, argmax % envWidth), axis=-1)
-    intensities = envmaps[argmax[:, 0], argmax[:, 1], :]
-    directions = np.stack([np.sin(El[argmax[:, 0], argmax[:, 1]]) * np.cos(Az[argmax[:, 0], argmax[:, 1]]),
-                           np.sin(El[argmax[:, 0], argmax[:, 1]]) * np.sin(Az[argmax[:, 0], argmax[:, 1]]),
-                           np.cos(El[argmax[:, 0], argmax[:, 1]])], axis=1)
-    top_direction = directions[np.argmax(intensities)]
-    top_intensity = np.max(intensities)
-    return top_direction, top_intensity
-
-def find_top_k_light_directions(envmaps, envWidth, envHeight, Az, El, k=3):
-    envHeight, envWidth = envmaps.shape[1], envmaps.shape[2]
-    intensity_map = np.sum(envmaps, axis=0)
-    
-    # Find the top k indices
-    flat_intensity_map = intensity_map.ravel()
-    top_k_indices = np.argpartition(flat_intensity_map, -k)[-k:]
-    
-    # Convert the indices to pixel coordinates
-    top_k_pixel_coords = np.array(np.unravel_index(top_k_indices, intensity_map.shape)).T
-    
-    # Calculate azimuth and elevation
-    Az = ( (top_k_pixel_coords[:, 1] + 0.5) / envWidth - 0.5) * 2 * np.pi
-    El = ( (top_k_pixel_coords[:, 0] + 0.5) / envHeight) * np.pi / 2.0
-    
-    # Convert azimuth and elevation to Cartesian coordinates
-    lx = np.sin(El) * np.cos(Az)
-    ly = np.sin(El) * np.sin(Az)
-    lz = np.cos(El)
-    
-    light_directions = np.column_stack((lx, ly, lz))
-    intensities = flat_intensity_map[top_k_indices]
-    
-    return light_directions, intensities
