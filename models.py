@@ -348,9 +348,10 @@ class decoderLight(nn.Module ):
         return x_out
 
 class output2env():
-    def __init__(self, SGNum, envWidth = 16, envHeight = 8, isCuda = True ):
+    def __init__(self, SGNum, envWidth = 16, envHeight = 8, isCuda = True, device = 'cpu' ):
         self.envWidth = envWidth
         self.envHeight = envHeight
+        self.device = device
 
         Az = ( (np.arange(envWidth) + 0.5) / envWidth - 0.5 )* 2 * np.pi
         El = ( (np.arange(envHeight) + 0.5) / envHeight) * np.pi / 2.0
@@ -366,7 +367,7 @@ class output2env():
 
         self.SGNum = SGNum
         if isCuda:
-            self.ls = self.ls.cuda()
+            self.ls = self.ls.to(self.device)
 
         self.ls.requires_grad = False
 
@@ -408,11 +409,12 @@ class output2env():
 
 class renderingLayer():
     def __init__(self, imWidth = 160, imHeight = 120, fov=57, F0=0.05, cameraPos = [0, 0, 0], 
-            envWidth = 16, envHeight = 8, isCuda = True):
+            envWidth = 16, envHeight = 8, isCuda = True, device = 'cpu'):
         self.imHeight = imHeight
         self.imWidth = imWidth
         self.envWidth = envWidth
         self.envHeight = envHeight
+        self.device = device
 
         self.fov = fov/180.0 * np.pi
         self.F0 = F0
@@ -454,11 +456,11 @@ class renderingLayer():
         self.envWeight = self.envWeight.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
 
         if isCuda:
-            self.v = self.v.cuda()
-            self.pCoord = self.pCoord.cuda()
-            self.up = self.up.cuda()
-            self.ls = self.ls.cuda()
-            self.envWeight = self.envWeight.cuda()
+            self.v = self.v.to(self.device)
+            self.pCoord = self.pCoord.to(self.device)
+            self.up = self.up.to(self.device)
+            self.ls = self.ls.to(self.device)
+            self.envWeight = self.envWeight.to(self.device)
 
     def forwardEnv(self, diffusePred, normalPred, roughPred, envmap):
         envR, envC = envmap.size(2), envmap.size(3)
@@ -474,7 +476,7 @@ class renderingLayer():
 
 
         if self.isCuda:
-            temp = temp.cuda()
+            temp = temp.to(self.device)
 
         ldirections = self.ls.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         camyProj = torch.einsum('b,abcd->acd',(self.up, normalPred)).unsqueeze(1).expand_as(normalPred) * normalPred

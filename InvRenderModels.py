@@ -120,6 +120,7 @@ class LightModel(nn.Module):
         self.envRenderWidth = envRenderWidth
         self.envRenderHeight = envRenderHeight
 
+        self.device = device
         isCuda = "cuda" in str(device)
         modelsroot = '{0}/check_cascadeLight{1}_sg12_offset1'.format(path, level)
         SGNum = 12
@@ -165,11 +166,11 @@ class LightModel(nn.Module):
         bn, SGNum, _, envRow, envCol = axisPred.size()
         envmapsPred = torch.cat([axisPred.view(bn, SGNum*3, envRow, envCol ), lambPred, weightPred], dim=1)
 
-        self.renderLayer = models.renderingLayer(isCuda = True,
+        self.renderLayer = models.renderingLayer(device=self.device, isCuda = True,
                 imWidth = imgSmall.shape[-1], imHeight = imgSmall.shape[-2], fov = fov,
                 envWidth = self.envRenderWidth, envHeight = self.envRenderHeight)
 
-        self.output2env = models.output2env(isCuda = True,
+        self.output2env = models.output2env(device=self.device, isCuda = True,
                 envWidth = self.envRenderWidth, envHeight = self.envRenderHeight, SGNum = SGNum )
 
         envmapsPredImage, axisPred, lambPred, weightPred = self.output2env.output2env(axisPred, lambPred, weightPred )
@@ -215,7 +216,8 @@ class InvRenderModel(nn.Module):
 
 
     def envPredictionToShadingImage(self, envmapsPred):
-        shading, top_k_light_directions, top_k_intensities = utils.predToShading(cp.asarray(envmapsPred), SGNum = 12 )
+        if self.device == 'cuda:1': cp.cuda.Device(1).use()
+        shading, top_k_light_directions, top_k_intensities = utils.predToShading(cp.asarray(envmapsPred, ), SGNum = 12 )
         shading = shading.transpose([1, 2, 0] )
         shading = shading / np.mean(shading ) / 3.0
         shading = np.clip(shading, 0, 1)
